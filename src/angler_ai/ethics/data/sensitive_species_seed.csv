@@ -1,0 +1,12 @@
+species_id,common_name,scientific_name,status,suppress_level,rationale,source_doc
+bull-trout,Bull Trout,Salvelinus confluentus,ESA-threatened,huc10,ESA-listed across native range; over-disclosure risks targeted poaching pressure on small spawning sections,CR-1.1
+greenback-cutthroat,Greenback Cutthroat,Oncorhynchus clarkii stomias,ESA-threatened,huc10,ESA-listed Colorado native; remaining populations highly localized,CR-1.2
+rio-grande-cutthroat,Rio Grande Cutthroat,Oncorhynchus clarkii virginalis,ESA-candidate,huc10,ESA candidate New Mexico and southern Colorado native,CR-1.2
+westslope-cutthroat,Westslope Cutthroat,Oncorhynchus clarkii lewisi,state-soc,huc12,State species-of-concern ID/MT/WA; recreationally prized native - HUC-12 balances planning utility against poaching risk,CR-1.2
+yellowstone-cutthroat,Yellowstone Cutthroat,Oncorhynchus clarkii bouvieri,state-soc,huc12,State species-of-concern ID/MT/WY; recreationally prized native,CR-1.2
+lahontan-cutthroat,Lahontan Cutthroat,Oncorhynchus clarkii henshawi,ESA-threatened,huc10,Federally Threatened per USFWS 2009 5-Year Review; localized Great Basin native NV/CA - HUC-10 suppression matches Apache/Gila/Paiute coverage,CR-1.1
+apache-trout,Apache Trout,Oncorhynchus apache,ESA-threatened,huc10,Federally Threatened; AZ native restricted to White Mountains tributaries - small population very vulnerable to over-disclosure,CR-1.1
+gila-trout,Gila Trout,Oncorhynchus gilae,ESA-threatened,huc10,Federally Threatened; NM/AZ native restricted to Gila River headwater tributaries,CR-1.1
+paiute-cutthroat,Paiute Cutthroat,Oncorhynchus clarkii seleniris,ESA-threatened,huc10,Federally Threatened; CA native restricted to Silver King Creek and reintroduction sites,CR-1.1
+bonneville-cutthroat,Bonneville Cutthroat,Oncorhynchus clarkii utah,state-soc,huc12,State species-of-concern UT; Bonneville Basin native,CR-1.2
+colorado-river-cutthroat,Colorado River Cutthroat,Oncorhynchus clarkii pleuriticus,state-soc,huc12,State species-of-concern CO/UT/WY; Colorado River Basin native,CR-1.2
