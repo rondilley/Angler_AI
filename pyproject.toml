@@ -4,7 +4,7 @@ version = "0.0.1"
 description = "Local-first, hardware-adaptive tool for researching, analyzing, and mapping fishing in US rivers and streams"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
-license = { text = "Apache-2.0" }
+license = { text = "GPL-3.0-only" }
 authors = [
     { name = "Ron Dilley", email = "ron.dilley@gmail.com" },
 ]
@@ -13,7 +13,7 @@ classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: End Users/Desktop",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Operating System :: POSIX :: Linux",
     "Operating System :: MacOS",
     "Operating System :: Microsoft :: Windows",

@@ -35,7 +35,7 @@ The output is a **relative suitability index in [0, 1]**, NOT a calibrated catch
 
 ## License
 
-Apache-2.0 for the codebase. Each ingested data source and each downloaded model carries its own license, surfaced at acquisition time.
+GPL-3.0 for the codebase. Each ingested data source and each downloaded model carries its own license, surfaced at acquisition time.
 
 ## Python version
 

@@ -288,7 +288,7 @@ This document captures what the system MUST, SHOULD, and COULD do (the requireme
 | ID | Requirement | Priority |
 |---|---|---|
 | CR-3.1 | Every model's license is surfaced at first download with user acknowledgment recorded. | MUST |
-| CR-3.2 | Codebase is Apache-2.0. | MUST |
+| CR-3.2 | Codebase is GPL-3.0. | MUST |
 | CR-3.3 | Every bundled dataset's license is tracked in the data manifest. | MUST |
 | CR-3.4 | State data published without an explicit license (e.g., PA PFBC service descriptor) is treated conservatively: attribute, do not redistribute the raw layer. | MUST |
 
