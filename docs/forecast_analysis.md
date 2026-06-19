@@ -52,70 +52,47 @@ out/forecasts/
 
 ## 1. End-to-end data flow (per-day, per-reach, per-species)
 
-```
-        USGS BRT v2.0              Peer-reviewed niches + phenology
-        boosted regression         (Elliott, Wehrly, Bear, Selong,
-        tree presence prior        Brinkman, Lamothe, Myrick, ...)
-        (419 species,                  |               |
-        ~270k V2 COMIDs)               |               |
-              |                        v               v
-              v                  thermal niche    seasonal phenology
-        hyperstability         (Gaussian bell)   (monthly multiplier
-        NOT applied at v0           |             capped at 1.0)
-        (cpue_weight=0)             |                  |
-              |                     |                  |
-              v                     v                  v
-        base_p (raw BRT)      thermal_factor    seasonal_factor
-              |                in [0.01, 1.0]    in [0.3, 1.0]
-              |                     ^                  ^
-              |                     |                  |
-              |              per-day water temp        |
-              |          (NWIS_obs > IDW air-adj       |
-              |             > IDW > Mohseni)           |
-              |                     ^                  |
-              |                     |                  |
-              |              NWIS_obs (param 00010)    |
-              |              IDW within HUC10 and      |
-              |              +-1 stream order +        |
-              |              Mohseni-Stefan air        |
-              |              delta on top              |
-              |                                        |
-              |       NWS+OpenMeteo precip prob        |
-              |       (api.weather.gov + open-meteo)   |
-              |             |                          |
-              |             v                          |
-              |       flow_factor in [0.6, 1.0]        |
-              |       OR real-discharge ratio          |
-              |       (NWIS 00060 recent vs            |
-              |        30-day baseline)                |
-              |             |                          |
-              |             |        USGS NWIS         |
-              |             |        flow z-score      |
-              |             |        anomaly per gauge |
-              |             |             |            |
-              |             |             v            |
-              |             |       anomaly_factor     |
-              |             |       in [0.7, 1.0]      |
-              |             |             |            |
-              v             v             v            v
-       suitability_index(reach, day)  =  CLAMP_[0,1](
-              base_p * thermal_factor * flow_factor
-              * seasonal_factor * anomaly_factor
-       )
-       suitability_lower / upper propagated through same chain
-       from the BRT CalibratedProbability 95% interval (FR-6.4)
-              |
-              v
-       NHDPlus HR              matplotlib + RdYlGn
-       reach geometry  ----->  LineCollection
-       (MULTILINESTRING)       per-day PNG render
-                               +
-                               summary.png
-                               (max over the window per reach)
-                               +
-                               LLM narrative
-                               (best/worst day with WHY explanation,
-                                grounded in per-day FactorBreakdown)
+```mermaid
+flowchart TD
+    BRT["USGS BRT v2.0<br/>boosted regression<br/>tree presence prior<br/>(419 species, ~270k V2 COMIDs)"]
+    HYP["hyperstability NOT applied at v0<br/>(cpue_weight=0)"]
+    BASEP["base_p (raw BRT)"]
+
+    NICHES["Peer-reviewed niches + phenology<br/>(Elliott, Wehrly, Bear, Selong,<br/>Brinkman, Lamothe, Myrick, ...)"]
+    TN["thermal niche<br/>(Gaussian bell)"]
+    SP["seasonal phenology<br/>(monthly multiplier<br/>capped at 1.0)"]
+    TF["thermal_factor<br/>in [0.01, 1.0]"]
+    SF["seasonal_factor<br/>in [0.3, 1.0]"]
+
+    WTEMP["per-day water temp<br/>(NWIS_obs &gt; IDW air-adj<br/>&gt; IDW &gt; Mohseni)"]
+    WSRC["NWIS_obs (param 00010)<br/>IDW within HUC10 and<br/>+-1 stream order +<br/>Mohseni-Stefan air<br/>delta on top"]
+
+    PRECIP["NWS + OpenMeteo precip prob<br/>(api.weather.gov + open-meteo)"]
+    FF["flow_factor in [0.6, 1.0]<br/>OR real-discharge ratio<br/>(NWIS 00060 recent vs<br/>30-day baseline)"]
+
+    ZA["USGS NWIS<br/>flow z-score<br/>anomaly per gauge"]
+    AF["anomaly_factor<br/>in [0.7, 1.0]"]
+
+    SI["suitability_index(reach, day) = CLAMP_[0,1](<br/>base_p * thermal_factor * flow_factor<br/>* seasonal_factor * anomaly_factor)<br/>suitability_lower / upper propagated through<br/>the same chain from the BRT CalibratedProbability<br/>95% interval (FR-6.4)"]
+
+    GEOM["NHDPlus HR<br/>reach geometry<br/>(MULTILINESTRING)"]
+    RENDER["matplotlib + RdYlGn<br/>LineCollection<br/>per-day PNG render<br/>+ summary.png (max over window per reach)<br/>+ LLM narrative<br/>(best/worst day with WHY explanation,<br/>grounded in per-day FactorBreakdown)"]
+
+    BRT --> HYP --> BASEP
+    NICHES --> TN --> TF
+    NICHES --> SP --> SF
+    WSRC --> WTEMP --> TF
+    PRECIP --> FF
+    ZA --> AF
+
+    BASEP --> SI
+    TF --> SI
+    FF --> SI
+    SF --> SI
+    AF --> SI
+
+    SI --> RENDER
+    GEOM --> RENDER
 ```
 
 The scoring chain is deterministic Python. The LLM (Llama 3.2 3B Q4_K_M on

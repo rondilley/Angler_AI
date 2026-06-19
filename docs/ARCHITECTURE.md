@@ -31,31 +31,28 @@ The system is organized as ten components (HP, IL, MR, DI, FS, PL, CL, RL, EL, U
 
 ## 1. System context
 
-```
-+---------------------------+    +-----------------------------+
-| Authoritative federal     |    | User's hardware             |
-| and state data sources    |    | (CPU/RAM/GPU/NPU detected   |
-|                           |    |  at first run)              |
-| - USGS hydro.nationalmap  |    +-------------+---------------+
-|   (NHDPlus HR ArcGIS)     |                  |
-| - EPA watersgeo           |                  |
-|   (NHDPlus V2.1 / ATTAINS |                  v
-|    / WQP)                 |    +-----------------------------+
-| - USGS ScienceBase        |    | Angler_AI (this codebase)   |
-|   (BRT v2.0 parquet)      |    |                             |
-| - api.waterdata.usgs.gov  |--->| Local DuckDB feature store  |
-|   (NWIS 00010 + 00060     |    | Local llama.cpp model cache |
-|    OGC API)               |    | Local PNG / GeoJSON output  |
-| - api.weather.gov         |    +-------------+---------------+
-|   (NWS NDFD daily)        |                  |
-| - api.open-meteo.com      |                  v
-|   (16-day daily forecast) |    +-----------------------------+
-| - PFBC TroutStocked       |    | User-facing surfaces        |
-|   (PA only at v0)         |    | - CLI commands              |
-| - Hugging Face            |    | - Local FastAPI HTTP API    |
-|   (Llama, Qwen, HydroGEM) |    | - PNG / GeoJSON files       |
-+---------------------------+    | - Markdown narratives       |
-                                 +-----------------------------+
+```mermaid
+flowchart LR
+    subgraph Sources["Authoritative federal and state data sources"]
+        S1["USGS hydro.nationalmap<br/>(NHDPlus HR ArcGIS)"]
+        S2["EPA watersgeo<br/>(NHDPlus V2.1 / ATTAINS / WQP)"]
+        S3["USGS ScienceBase<br/>(BRT v2.0 parquet)"]
+        S4["api.waterdata.usgs.gov<br/>(NWIS 00010 + 00060 OGC API)"]
+        S5["api.weather.gov<br/>(NWS NDFD daily)"]
+        S6["api.open-meteo.com<br/>(16-day daily forecast)"]
+        S7["PFBC TroutStocked<br/>(PA only at v0)"]
+        S8["Hugging Face<br/>(Llama, Qwen, HydroGEM)"]
+    end
+
+    HW["User's hardware<br/>(CPU/RAM/GPU/NPU detected at first run)"]
+
+    AAI["Angler_AI (this codebase)<br/>Local DuckDB feature store<br/>Local llama.cpp model cache<br/>Local PNG / GeoJSON output"]
+
+    UI["User-facing surfaces<br/>CLI commands<br/>Local FastAPI HTTP API<br/>PNG / GeoJSON files<br/>Markdown narratives"]
+
+    Sources --> AAI
+    HW --> AAI
+    AAI --> UI
 ```
 
 There is **no SaaS dependency** at v0. The only outbound network calls are to public data APIs at ingest time and to Hugging Face for first-time model downloads. Once ingested, the tool runs fully offline (NFR-4.5).
@@ -85,18 +82,18 @@ Each component is independently testable and has a stable interface. Inter-compo
 
 ### 3.1 Setup (one-time per machine)
 
-```
-+---------+   probe    +--------+   pull-models   +--------+
-| user    | --------> | HP+MR  | --------------> | local  |
-|         | <-------- |        | <-------------- | GGUF   |
-+---------+ profile   +--------+   manifest      +--------+
-                                                     ^
-                                                     |
-                                                     | first-time download
-                                                     v
-                                                +---------+
-                                                | HF Hub  |
-                                                +---------+
+```mermaid
+flowchart LR
+    user[user]
+    HPMR["HP + MR"]
+    GGUF["local<br/>GGUF"]
+    HF["HF Hub"]
+
+    user -->|probe| HPMR
+    HPMR -->|profile| user
+    HPMR -->|pull-models| GGUF
+    GGUF -->|manifest| HPMR
+    GGUF <-->|first-time download| HF
 ```
 
 CLI command flow:
@@ -112,16 +109,16 @@ angler-ai pull-models --profile auto
 
 ### 3.2 Ingest (per HUC8, per source)
 
-```
-+---------+  ingest   +--------+   HTTP   +-----------+
-| user    | --------> | DI     | -------> | federal   |
-|         |           |        | <------- | endpoint  |
-+---------+           +--------+          +-----------+
-                          |
-                          v
-                      +--------+
-                      | FS     | <----- DuckDB write
-                      +--------+
+```mermaid
+flowchart LR
+    user[user]
+    DI[DI]
+    EP["federal<br/>endpoint"]
+    FS[FS]
+
+    user -->|ingest| DI
+    DI <-->|HTTP| EP
+    DI -->|DuckDB write| FS
 ```
 
 CLI command flow:
@@ -139,44 +136,40 @@ The dispatcher writes a per-source `IngestSummary` to `data_manifest.json` per D
 
 This is the highest-value path and the one most users care about.
 
-```
-NHDPlus HR reaches           USGS BRT v2.0           Peer-reviewed thermal
-(geometry, huc10/12,       presence priors           niches + phenology
- stream_order, drainage)  (419 species, V2 COMID)    (12 species in registry)
-       |                          |                          |
-       v                          v                          v
-+--------------+   +-------------------------+   +------------------------+
-| FS reaches   |   | FS brt_priors           |   | thermal_niches.py +    |
-|              |   | + xwalk_v2_to_hr        |   | seasonal_activity.py   |
-+--------------+   +-------------------------+   +------------------------+
-       |                  |                                |
-       |                  v                                |
-       |        +-------------------+                      |
-       |        | species_priors.py |                      |
-       |        | -> SpeciesPrior   |                      |
-       |        |    with           |                      |
-       |        |    CalibratedProb |                      |
-       |        |    (cpue_w=0)     |                      |
-       |        +-------------------+                      |
-       |                  |                                |
-       v                  v                                v
-+-----------------------------------------------------------------------+
-| forecast_scoring.score_reach_daily(prior, daily_temp, daily_forecast, |
-|     daily_discharge_factor, gauge_anomaly, score_date)                |
-| -> DailyScore(suitability_index, suitability_lower/upper, factors)   |
-+-----------------------------------------------------------------------+
-       ^                  ^                                ^
-       |                  |                                |
-NWIS_obs water temp       Open-Meteo + NWS                NWIS discharge
-+ IDW + Mohseni-Stefan    daily forecast                  + flow_anomaly
-(water_temp_model.py)     (noaa_forecast.py +             (flow_anomaly.py)
-                           open_meteo.py)
-       ^
-       |
-+----------------+
-| FS reach_temp  |
-| reach_flow     |
-+----------------+
+```mermaid
+flowchart TD
+    NHD["NHDPlus HR reaches<br/>(geometry, huc10/12,<br/>stream_order, drainage)"]
+    BRT["USGS BRT v2.0<br/>presence priors<br/>(419 species, V2 COMID)"]
+    NICHE["Peer-reviewed thermal<br/>niches + phenology<br/>(12 species in registry)"]
+
+    FSR["FS reaches"]
+    FSB["FS brt_priors<br/>+ xwalk_v2_to_hr"]
+    NICHEMOD["thermal_niches.py +<br/>seasonal_activity.py"]
+
+    SP["species_priors.py<br/>-&gt; SpeciesPrior with<br/>CalibratedProb (cpue_w=0)"]
+
+    SCORE["forecast_scoring.score_reach_daily(<br/>prior, daily_temp, daily_forecast,<br/>daily_discharge_factor, gauge_anomaly, score_date)<br/>-&gt; DailyScore(suitability_index,<br/>suitability_lower/upper, factors)"]
+
+    WTEMP["NWIS_obs water temp<br/>+ IDW + Mohseni-Stefan<br/>(water_temp_model.py)"]
+    FCAST["Open-Meteo + NWS<br/>daily forecast<br/>(noaa_forecast.py +<br/>open_meteo.py)"]
+    DISCH["NWIS discharge<br/>+ flow_anomaly<br/>(flow_anomaly.py)"]
+
+    FSTF["FS reach_temp<br/>reach_flow"]
+
+    NHD --> FSR
+    BRT --> FSB
+    NICHE --> NICHEMOD
+
+    FSB --> SP
+
+    FSR --> SCORE
+    SP --> SCORE
+    NICHEMOD --> SCORE
+
+    FSTF --> WTEMP
+    WTEMP --> SCORE
+    FCAST --> SCORE
+    DISCH --> SCORE
 ```
 
 Driver wraps the above for ALL days in the forecast window:
@@ -211,22 +204,24 @@ Driver wraps the above for ALL days in the forecast window:
 
 This path uses the LLM for reasoning, not the forecast pipeline:
 
-```
-user query
-   v
-ProfileAgent  --LLM--> structured QueryPlan (species, state, huc8, intent)
-   v
-PlanningAgent --code-> tool list + bound defaults
-   v
-AnalystAgent  --LLM-->
-   -> tools.species_priors_for_reach(...)
-   -> tools.attains_status(...)
-   -> tools.stocking_events(...)
-   -> tools.regulations(...)
-   -> tools.hydrogem_flow_anomaly(...)  (raises ToolError if window too short)
-   -> tools.hydrogem_synthetic_test()   (smoke demo path)
-   v
-AnalystResponse(narrative, citations, tool_call_log)
+```mermaid
+flowchart TD
+    Q["user query"]
+    PA["ProfileAgent"]
+    QP["structured QueryPlan<br/>(species, state, huc8, intent)"]
+    PLA["PlanningAgent"]
+    TL["tool list + bound defaults"]
+    AA["AnalystAgent"]
+    TOOLS["tools.species_priors_for_reach(...)<br/>tools.attains_status(...)<br/>tools.stocking_events(...)<br/>tools.regulations(...)<br/>tools.hydrogem_flow_anomaly(...) <i>(raises ToolError if window too short)</i><br/>tools.hydrogem_synthetic_test() <i>(smoke demo path)</i>"]
+    AR["AnalystResponse(narrative, citations, tool_call_log)"]
+
+    Q --> PA
+    PA -->|LLM| QP
+    QP --> PLA
+    PLA -->|code| TL
+    TL --> AA
+    AA -->|LLM| TOOLS
+    TOOLS --> AR
 ```
 
 Every tool either returns a real value or raises `ToolError`. The Analyst surfaces the error in the response rather than fabricating.
