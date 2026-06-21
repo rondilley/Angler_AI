@@ -97,6 +97,40 @@ This document captures how we know we are done: per-milestone release gates, per
 - [x] Best/worst day named explicitly in narrative with WHY explanation.
 - [x] Observation-anchored Mohseni-Stefan (`NWIS_interp_air_adjusted`) eliminates the "15 flat days then a jump" IDW artifact.
 
+### M12 Gate: Non-native species priors via USGS NAS + NorWeST baseline anchor (2026-06-20)
+
+Closes multi-AI review ML-01 honestly (presence-only NAS fallback router, not the originally-proposed `range_type` column on `brt_priors`).
+
+- [x] `nas_occurrences` schema lands; `USGSNASIngest` ingests 4 Colorado HUC8s (14020001/02/04/06) — 31 species summarized; 4 western HUC8s (17040203, 10020004/05/07) — 29 species summarized. Establishment filter `{established, stocked, collected, regularly observed}` applied; eradicated/failed dropped.
+- [x] `species_priors_for_geometry` becomes a Python-level router: BRT first, then `non_native_prior_for_geometry` (NAS fallback) when BRT has no row. NAS prior produces `CalibratedProbability(point=0.35, lower=0.05, upper=0.65, interval_kind='spatial_unmodeled')`. No SQL UNION — the two interval semantics never blend.
+- [x] `ProbabilityBasis.interval_kind` validates `{'sampling', 'spatial_unmodeled', 'climatological'}`; validation enforced in `__post_init__`.
+- [x] `forecast_scoring.base_source` is source-aware (derives from `cp.basis.sources[0]` with branch-aware labelling, preserving hyperstability annotation).
+- [x] `reach_temp_baseline` schema lands; `NorWeSTIngest` degrades cleanly when shapefile absent (logs warning, returns 0 rows, downstream uses stratified Mohseni defaults). Removed from `temperature.py::_PRIORITY` resolver chain.
+- [x] `water_temp_model.project_daily_temps` consults `reach_temp_baseline` per reach and uses NorWeST as the Mohseni anchor when present; new source tags `NWIS_interp_air_adjusted_norwest_anchor` and `NWIS_air_projected_norwest_anchor`.
+- [x] `CPWStockingIngest` raises `NotImplementedError` honestly. Dispatcher surfaces deferral as `ok=False`. Verified 2026-06-20 the public CPW weekly report has water+region+date only; `data.colorado.gov` has no CPW dataset.
+- [x] **Numeric acceptance gates from the M12 plan:**
+  - Native species (BRT path) drift vs prior topo-only run ≤ 0.005 max across all 8 (water × {brown, cutthroat}) combos (budget was 0.05). PASS.
+  - NAS-derived interval half-width = 0.30 (floor 0.20). PASS.
+  - NAS rainbow + brook medians all in [0.05, 0.50] band (0.281, 0.320, 0.345 across 3 CO HUC8s; 0.269, 0.311, 0.244, 0.349 across 4 western HUC8s). PASS.
+- [x] Coverage delta: Colorado run pre-M12 → 8 of 16 (water, species) combos produced maps; post-M12 → 11 of 16 (5 new species maps, 5 honest skips where NAS itself has no record). Western run post-M12 → 15 of 15 with full output (NAS coverage is strong on western waters with heavy stocking history).
+- [ ] Tier 2 follow-up: BRT-mean-anchored prior (Plan agent's Option 1; replace flat 0.35 with per-species mean across native-range HUC8s). **DEFERRED** — needs catch validation data.
+
+### M13 Gate: USGS topographic basemap + day-over-day delta + animation GIF (2026-06-20)
+
+- [x] `pyproject.toml` `maps` optional extra: `contextily>=1.6`, `pyproj>=3.6`, `matplotlib-scalebar>=0.8`. All BSD/MIT, fit GPL-3 codebase.
+- [x] `render_scored_reaches_png` overlays USGS National Map USTopo tiles (federal `basemap.nationalmap.gov`); reach lines get white halo via `path_effects.Stroke`. Graceful 3-stage fallback if contextily missing / provider not found / tile fetch fails — caption notes which path was taken; never silent.
+- [x] `render_delta_reaches_png` renders day-over-day change on a RdBu diverging colormap (red = worse, blue = better, gray = stable when `|delta| < 0.02`). Linewidth scaled to `|delta|`. Caption includes "Delta plot: N reaches, M significantly changed (P%)".
+- [x] `render_animation_gif` stitches per-day delta PNGs via Pillow (no new package; already a matplotlib dep). 1.8s hold first/last frame, 0.6s middle, infinite loop, 1200px downsample, 256-color adaptive palette per frame.
+- [x] Output structure per (water, species): `summary.png` + 16 `daily/<date>.png` + 15 `daily_delta/<date>.png` + `animation.gif`. Verified on both CO (11 species, ~273 PNGs + 11 GIFs) and western (15 species, 510 PNGs + 15 GIFs) runs.
+
+### M14 Gate: Timestamped output folder convention (2026-06-20)
+
+- [x] Batch driver runs land at `output/forecasts/<YYYY-MM-DD_HHMMSS>_<run-type>/<water>/<species>/...`.
+- [x] Both `.venv/run_colorado_forecasts.py` and `.venv/run_western_forecasts.py` compute the timestamped run dir via `_make_run_dir()` and mutate module-level `OUTPUT_DIR` global at `main()` startup.
+- [x] Pre-M14 outputs preserved at `output/forecasts/2026-06-20_archived/`. No prior run was lost.
+- [x] Smoke test: two consecutive driver runs produce two distinct timestamped folders. Re-runs are immediately distinguishable.
+- [x] `out/` directory removed after migration. Empty-directory handle-leak workaround captured in `tasks/lessons.md` lesson 5 (SysInternals `handle64.exe`).
+
 ### Cross-cut Gate: Ethics
 
 - [x] Bull trout query in Idaho returns reach-level suppression notice + HUC-10 fallback.

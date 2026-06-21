@@ -2,7 +2,7 @@
 
 Local-first, hardware-adaptive tool for researching, analyzing, and mapping fishing in US rivers and streams. Produces per-reach, per-day **relative suitability index** maps that fuse federal hydrography, USGS species distributions, peer-reviewed thermal niches, real-time weather, observed water temperature, and species-specific biology. Inference runs locally via llama.cpp; the tool auto-detects your hardware and selects appropriate models on first use.
 
-**Status:** v0 working through M8 + Tier 1 multi-AI review fixes. Hardware-adaptive llama.cpp inference, real federal data ingest, per-day relative suitability maps over a 14-16 day window, observation-anchored water-temperature modeling, and a 3-agent reasoning pipeline with best/worst day narratives are all functional.
+**Status:** v0 working through M14. Hardware-adaptive llama.cpp inference, real federal data ingest (now including USGS NAS for non-native species presence), per-day relative suitability maps over a 14-17 day window overlaid on USGS National Map topographic basemaps, day-over-day delta maps with red-shift/blue-shift visualization, animated GIFs of the temporal trajectory, observation-anchored water-temperature modeling, NorWeST climatological anchor for Mohseni-Stefan, and a 3-agent reasoning pipeline with best/worst day narratives are all functional.
 
 The output is a **relative suitability index in [0, 1]**, NOT a calibrated catch probability. Multi-AI review (2026-06-17) flagged the calibrated-probability framing as a statistical category error until M4 catch-data validation - the documents and code have been renamed accordingly.
 
@@ -47,7 +47,7 @@ Python 3.10, 3.11, or 3.12. (3.13+ pending llama-cpp-python wheel availability.)
 git clone https://github.com/yourrepo/Angler_AI
 cd Angler_AI
 python -m venv .venv && .venv\Scripts\activate
-pip install -e ".[dev,prediction]"
+pip install -e ".[dev,prediction,maps]"   # `maps` adds USGS topo basemap support (M13)
 
 # pick the llama-cpp-python wheel for your hardware:
 pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu125
@@ -63,7 +63,7 @@ angler-ai forecast --species "brown trout" --huc8 17040203 --out hf_brown.png
 angler-ai ask "good brown trout fishing on the Henrys Fork next week"
 ```
 
-For multi-water per-day analysis with summary + 16 daily maps + LLM narrative per (water, species), see `.venv/run_western_forecasts.py`.
+For multi-water per-day analysis with summary + 16 daily maps + 15 day-over-day delta maps + animation GIF + LLM narrative per (water, species), see `.venv/run_western_forecasts.py` and `.venv/run_colorado_forecasts.py`. Driver runs land at `output/forecasts/<YYYY-MM-DD_HHMMSS>_<western|colorado>/`.
 
 ## What ships in v0
 
@@ -73,23 +73,29 @@ For multi-water per-day analysis with summary + 16 daily maps + LLM narrative pe
   - USGS NHDPlus HR hydrography (any HUC8, any of 50 states)
   - USGS NHDPlus V2.1 -> HR crosswalk via shared REACHCODE
   - USGS BRT v2.0 fluvial fish SDM (419 species, 112M predictions; DOI 10.5066/P1UV25FW)
+  - **USGS NAS** non-native species occurrence per HUC8 (M12; federal `nas.er.usgs.gov/api/v2`)
   - USGS NWIS continuous water-temperature observations (parameter 00010)
   - USGS NWIS streamflow + discharge (parameter 00060)
   - EPA Water Quality Portal + EPA ATTAINS impaired-waters
+  - **USFS NorWeST** mean-August stream-temperature climatology per processing unit (M12; user-supplied shapefile, degrades cleanly if absent)
   - NOAA NWS daily weather forecast (api.weather.gov, days 0-7)
   - Open-Meteo 16-day extended forecast (days 8-16; tagged `OpenMeteo_daily`)
   - PA PFBC trout stocking (PA only at v0; ID/MT/WY at v1)
-- **Per-day suitability index** (`out/forecasts/<water>/<species>/`):
+  - CPW stocking: explicitly v1-deferred — CPW publishes only water+region+date in its public weekly report (verified 2026-06-20); `cpw_stocking` ingester raises `NotImplementedError` honestly
+- **Per-day suitability index** (`output/forecasts/<YYYY-MM-DD_HHMMSS>_<run-type>/<water>/<species>/`, M14):
   - `summary.png` - best-day-over-window aggregate
-  - `daily/<YYYY-MM-DD>.png` - one PNG per day in the 14-16 day window
-  - 5-factor multiplicative chain: BRT calibrated prior x species thermal niche x flow factor x seasonal phenology x flow z-score anomaly
-  - Per-reach 95% interval propagated through the factor chain
+  - `daily/<YYYY-MM-DD>.png` - one PNG per day in the 14-17 day window
+  - `daily_delta/<YYYY-MM-DD>.png` - day-over-day change per reach (red-shift = worse, blue-shift = better, gray = stable; M13)
+  - `animation.gif` - per-(water, species) animated GIF cycling through the delta frames (M13)
+  - 5-factor multiplicative chain: BRT (or NAS-fallback for non-natives, M12) calibrated prior x species thermal niche x flow factor x seasonal phenology x flow z-score anomaly
+  - Per-reach 95% interval propagated through the factor chain; `interval_kind` ('sampling' vs 'spatial_unmodeled') distinguishes BRT vs NAS uncertainty semantics (M12)
   - Output clamped to [0, 1]; seasonal_factor capped at 1.0 with audit tag
-  - Renders via matplotlib + RdYlGn (red = low suitability, green = high)
+  - Renders via matplotlib + RdYlGn over a USGS National Map USTopo basemap (M13; federal public-domain, cached locally after first fetch)
 - **Water-temperature modeling**:
-  - Source priority: `NWIS_obs` (direct gauge measurement) > `NWIS_interp_air_adjusted` (IDW spatial anchor + per-day Mohseni-Stefan air-temp delta) > `NWIS_interp` (pure IDW) > `NWIS_air_projected` (Mohseni-Stefan only) > `not_modeled`
+  - Source priority: `NWIS_obs` (direct gauge measurement) > `NWIS_interp_air_adjusted{_norwest_anchor}` (IDW spatial anchor + per-day Mohseni-Stefan air-temp delta; NorWeST replaces the stratified default when present, M12) > `NWIS_interp` (pure IDW) > `NWIS_air_projected{_norwest_anchor}` (Mohseni-Stefan only) > `not_modeled`
   - IDW restricted to same HUC10 AND within +-1 stream order of the receiving reach (no mainstem gauge contaminating a cold cirque tributary)
   - Mohseni-Stefan defaults stratified by stream order: small headwater (alpha=16, beta=12), medium (alpha=19, beta=14), mainstem (alpha=22, beta=15)
+  - **NorWeST (M12)** is intentionally NOT in the resolver `_PRIORITY` chain — it is 1993-2011 mean-August climatology, not a daily reading; instead it feeds `water_temp_model.project_daily_temps` as the per-reach baseline anchor that the Mohseni-Stefan delta is projected off of
 - **Peer-reviewed species thermal niches** for 12 species: Elliott 1994 (brown), Wehrly 2007 (brook), Bear 2007 (cutthroat), Selong 2001 (bull), Brinkman 2013 (mountain whitefish), Hubert 1985 / Lamothe 2003 (arctic grayling), Myrick 2000 (rainbow), Wismer 1987 (smallmouth), Casselman 1996 (northern pike), Stewart 1983 (lake trout).
 - **Peer-reviewed species seasonal phenology** for the same 12 species: monthly activity multipliers from documented spawning + peak-feeding windows.
 - **LLM narrative per (water, species)** describing the temporal trajectory: explicit best day and worst day with WHY explanation grounded in per-day factor breakdown (mean water temp vs species thermal niche, flow factor change, seasonal factor, anomaly).
@@ -120,5 +126,8 @@ For multi-water per-day analysis with summary + 16 daily maps + LLM narrative pe
 - [x] **Multi-AI review + Tier 1 fixes** - rename score -> suitability_index, propagate interval through factor chain, clamp to [0,1], drop hyperstability from BRT path, add missing ESA species to sensitive-species seed
 - [x] **Per-day maps** - one PNG per day in the 14-16 day window, plus summary; best/worst day narrative with WHY explanation
 - [x] **Observation-anchored Mohseni-Stefan** - per-day temporal variation on IDW-anchored reaches (`NWIS_interp_air_adjusted` source tag)
+- [x] **M12 (2026-06-20) - non-native species priors via USGS NAS + NorWeST baseline anchor + `interval_kind` semantic** - rainbow + brook + other non-natives outside BRT's native range now produce honest wide-interval suitability maps instead of silent skips; NorWeST repurposed as Mohseni baseline anchor; CPW stocking explicitly deferred to v1
+- [x] **M13 (2026-06-20) - USGS topographic basemap overlay + day-over-day delta maps + animated GIF** - all PNGs now sit on USGS National Map USTopo terrain; per-(water, species) animation cycles through 15 day-over-day change frames with red-shift/blue-shift coloring
+- [x] **M14 (2026-06-20) - timestamped output folder convention** - `output/forecasts/<YYYY-MM-DD_HHMMSS>_<run-type>/...` per driver invocation
 
 See [SUCCESS_CRITERIA.md](docs/SUCCESS_CRITERIA.md) for per-milestone release gates and the full v0 acceptance suite.

@@ -175,7 +175,8 @@ flowchart TD
 Driver wraps the above for ALL days in the forecast window:
 
 ```
-.venv/run_western_forecasts.py
+.venv/run_{western,colorado}_forecasts.py
+   OUTPUT_DIR = output/forecasts/<YYYY-MM-DD_HHMMSS>_<western|colorado>/   # M14
    for water in WATERS:
        fetch_centroid_NWS()
        fetch_centroid_OpenMeteo()
@@ -186,16 +187,20 @@ Driver wraps the above for ALL days in the forecast window:
        detect_HUC8_anomalies() -> per-gauge z-score
        map_reach_to_nearest_gauge() -> per-reach anomaly
        for species in species_list:
-           species_priors_for_geometry(huc8) -> list[SpeciesPrior]
+           species_priors_for_geometry(huc8) -> list[SpeciesPrior]    # M12: BRT → NAS fallback router
            project_daily_temps(comids, daily_air_high, huc8) -> {(comid,date): ProjectedDailyTemp}
+                                                                       # M12: reach_temp_baseline (NorWeST) anchors Mohseni when present
            for sp, geom_wkt in priors:
                scores_list = score_reach_over_window(sp, per_day_temps, ...)
                for ds in scores_list:
                    per_day_lists[ds.score_date].append(ScoredReach)
                summary_scored.append(best_day)
-           render summary.png
+           render summary.png                                          # M13: USGS USTopo basemap underlay
            for date in per_day_lists:
-               render daily/<date>.png
+               render daily/<date>.png                                 # M13: basemap + white-halo lines
+           for (d_today, d_yest) in pairwise(sorted dates):            # M13: day-over-day delta path
+               render daily_delta/<d_today>.png                        # M13: RdBu diverging, red=worse, blue=better
+           render animation.gif(delta_paths)                           # M13: Pillow GIF stitcher
            build DayFactorSummary for best + worst day
            generate_narrative(LLM, best/worst day + niche bounds)
 ```
@@ -358,10 +363,15 @@ Dispatcher (`ingest/dispatch.py`) ordered to populate foundational tables first:
 | 1 | `nhdplus` | `NHDPlusHRIngest` | `reaches` |
 | 2 | `v2_xwalk` | `NHDPlusV2HRXwalkIngest` | `xwalk_v2_to_hr` |
 | 3 | `brt` | `USGSBRTFluvialFishIngest` | `brt_priors`, `brt_species` |
-| 4 | `attains` | `EPAATTAINSIngest` | `attains_status` |
-| 5 | `nwis` | `USGSNWISIngest` | `reach_flow` (state-wide) |
-| 6 | `wqp` | `EPAWaterQualityPortalIngest` | `reach_wq` |
-| 7 | `pa_pfbc` | `PAPFBCTroutStockedIngest` | `stocking_events` (PA only) |
+| 4 | `nas` | `USGSNASIngest` | `nas_occurrences` (M12; federal nas.er.usgs.gov v2 API per HUC8) |
+| 5 | `norwest` | `NorWeSTIngest` | `reach_temp_baseline` (M12; reads NorWeST PU shapefile, degrades cleanly if absent) |
+| 6 | `attains` | `EPAATTAINSIngest` | `attains_status` |
+| 7 | `nwis` | `USGSNWISIngest` | `reach_flow` (state-wide) |
+| 8 | `wqp` | `EPAWaterQualityPortalIngest` | `reach_wq` |
+| 9 | `pa_pfbc` | `PAPFBCTroutStockedIngest` | `stocking_events` (PA only) |
+
+Explicit-only (NOT part of `--source all` dispatch):
+- `cpw_stocking` (`CPWStockingIngest`) - raises `NotImplementedError` honestly. CPW weekly report is HTML-only with no species/count; data.colorado.gov has no CPW stocking dataset. v1 path requires FOIA or PDF scrape. (M12)
 
 Forecast-pipeline-scoped ingest modules called from the driver, not the dispatcher:
 - `nwis_water_temp.ingest_water_temp_for_huc8` -> `reach_temperature` with source `NWIS_obs`
@@ -373,17 +383,19 @@ Rate limiting / backoff: `nwis_water_temp._get_with_backoff` retries 429 with ex
 
 ### 5.5 FS (Feature Store)
 
-DuckDB embedded database at `paths.feature_store` (default `%LOCALAPPDATA%\angler_ai\features.duckdb`). Schema at `src/angler_ai/features/schema.sql` (14 tables):
+DuckDB embedded database at `paths.feature_store` (default `%LOCALAPPDATA%\angler_ai\features.duckdb`). Schema at `src/angler_ai/features/schema.sql` (16 tables as of M12):
 
 - `reaches` - NHDPlus HR geometry + metadata, PRIMARY KEY comid
 - `xwalk_v2_to_hr` - V2 COMID <-> HR COMID crosswalk (1:N) with confidence and method
 - `xwalk_necd_to_hr` - EcoSHEDS NECD ID <-> HR COMID (v1)
-- `reach_temperature` - water temperature per (comid, date, source)
+- `reach_temperature` - water temperature per (comid, date, source) - DAILY/OBSERVED values
+- `reach_temp_baseline` - per-reach baseline temperature per (comid, month, source) - CLIMATOLOGICAL anchors, NorWeST mean-Aug populates here (M12)
 - `reach_flow` - discharge per (gauge_id, ts)
 - `reach_wq` - EPA WQP samples
 - `attains_status` - EPA ATTAINS impaired-waters by COMID
 - `brt_priors` - USGS BRT v2.0 species presence probability per (V2 COMID, species)
 - `brt_species` - species metadata (scientific_name, common_name, prevalence)
+- `nas_occurrences` - USGS NAS non-native presence summary per (huc8, scientific_name) with status + year_first + year_last + n_records (M12)
 - `stocking_events` - state stocking by (state, event_date, species)
 - `regulations` - state fishing regs
 - `sensitive_species` - CR-1 suppression policy seed
@@ -402,14 +414,14 @@ The largest component. Subdivided:
 | Module | Role |
 |---|---|
 | `brt_priors.py` | Raw BRT row lookup (rarely called directly; species_priors.py is the canonical interface) |
-| `species_priors.py` | `species_priors_for_reach` / `species_priors_for_geometry` -> calibrated `SpeciesPrior` |
-| `water_temp_model.py` | `project_daily_temps` -> `{(comid, date): ProjectedDailyTemp}` with priority chain |
-| `temperature.py` | `resolve` / `resolve_many` - reach-level temperature picker that honors source priority |
+| `species_priors.py` | `species_priors_for_reach` + `species_priors_for_geometry` (M12 Python-level router: BRT first, NAS fallback via `non_native_prior_for_geometry`) -> calibrated `SpeciesPrior` |
+| `water_temp_model.py` | `project_daily_temps` -> `{(comid, date): ProjectedDailyTemp}` with priority chain. M12: consults `reach_temp_baseline` (NorWeST) per-reach anchor when present |
+| `temperature.py` | `resolve` / `resolve_many` - reach-level temperature picker that honors source priority. M12: NorWeST REMOVED from `_PRIORITY` chain (it's climatology, not daily) |
 | `thermal_niches.py` | 12-species published thermal preference curves + Gaussian bell |
 | `seasonal_activity.py` | 12-species published monthly activity multipliers |
 | `flow_anomaly.py` | Statistical z-score anomaly detector + reach-to-gauge mapping |
-| `forecast_scoring.py` | `score_reach_daily` / `score_reach_over_window` / `max_score_over_window` -> `DailyScore` |
-| `map_render.py` | matplotlib + RdYlGn PNG renderer with colorbar + caption |
+| `forecast_scoring.py` | `score_reach_daily` / `score_reach_over_window` / `max_score_over_window` -> `DailyScore`. M12: `base_source` is source-aware (derived from `cp.basis.sources[0]`) |
+| `map_render.py` | matplotlib + RdYlGn PNG renderer + USGS USTopo basemap overlay (M13) + `render_delta_reaches_png` day-over-day diverging map (M13) + `render_animation_gif` Pillow stitcher (M13) |
 | `map_export.py` | GeoJSON FeatureCollection writer for QGIS / Felt / kepler.gl |
 | `hydrogem.py` + `hydrogem_arch.py` | TCN-Transformer anomaly detector for the `ask` agent |
 | `ssn2.py` | v1; raises NotImplementedError with stable signature |
