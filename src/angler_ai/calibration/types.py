@@ -25,11 +25,32 @@ class ProbabilityBasis:
     """e.g. ('SSN2_binomial', 'USGS_BRT_V2.0', 'PG-GNN'). Each tag must
     correspond to a Prediction-Layer model_id."""
 
+    interval_kind: str = "sampling"
+    """Semantic of the lower/upper interval on the CalibratedProbability:
+       - 'sampling': uncertainty around a point estimate from finite survey
+         data (BRT survey count, SSN2 binomial GLM, etc.). Typical width
+         <= 0.10.
+       - 'spatial_unmodeled': presence confirmed at HUC8 scale but reach-level
+         suitability not modeled. Width >= 0.20 by construction. Used for
+         NAS-derived non-native fallback priors.
+       - 'climatological': baseline from long-term climatology (NorWeST mean
+         August). Currently not surfaced as a SpeciesPrior interval.
+
+    Downstream surfaces (map caption, narrative, JSON) MUST surface this so
+    a brown-trout (sampling, 0.05 wide) and rainbow-trout (spatial_unmodeled,
+    0.40 wide) side-by-side reads correctly. FR-6.4 invariant."""
+
     def __post_init__(self) -> None:
         total = self.cpue_derived_weight + self.fisheries_independent_weight
         if not 0.0 <= total <= 1.0 + 1e-6:
             raise ValueError(
                 f"Probability basis weights must sum to <= 1.0, got {total}"
+            )
+        if self.interval_kind not in ("sampling", "spatial_unmodeled", "climatological"):
+            raise ValueError(
+                f"interval_kind must be one of "
+                f"('sampling', 'spatial_unmodeled', 'climatological'), "
+                f"got {self.interval_kind!r}"
             )
 
 

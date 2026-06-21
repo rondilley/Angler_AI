@@ -14,12 +14,15 @@ from pathlib import Path
 
 from angler_ai.features.store import FeatureStore
 from angler_ai.ingest.base import IngestionModule
+from angler_ai.ingest.cpw_stocking import CPWStockingIngest
 from angler_ai.ingest.epa_attains import EPAATTAINSIngest
 from angler_ai.ingest.epa_wqp import EPAWaterQualityPortalIngest
 from angler_ai.ingest.nhdplus_hr import NHDPlusHRIngest
 from angler_ai.ingest.nhdplus_v2_xwalk import NHDPlusV2HRXwalkIngest
+from angler_ai.ingest.norwest import NorWeSTIngest
 from angler_ai.ingest.pa_pfbc import PAPFBCTroutStockedIngest
 from angler_ai.ingest.usgs_brt import USGSBRTFluvialFishIngest
+from angler_ai.ingest.usgs_nas import USGSNASIngest
 from angler_ai.ingest.usgs_nwis import USGSNWISIngest
 
 log = logging.getLogger(__name__)
@@ -27,14 +30,28 @@ log = logging.getLogger(__name__)
 
 # Ordered so the foundational reaches table is populated first; downstream
 # joins (PFBC -> COMID, ATTAINS -> COMID, NWIS -> COMID) can attach after.
+# `nas` runs after `v2_xwalk` because it doesn't depend on the xwalk, but
+# `norwest` does (joins NorWeST V2 COMIDs to HR via xwalk_v2_to_hr).
+# `cpw_stocking` is omitted from `all` - it raises NotImplementedError
+# honestly and would noise the per-state full ingest. Run it explicitly
+# with `--source cpw_stocking` to see the deferral message.
 _DEFAULT_ORDER: tuple[tuple[str, type[IngestionModule]], ...] = (
     ("nhdplus", NHDPlusHRIngest),
     ("v2_xwalk", NHDPlusV2HRXwalkIngest),
     ("brt", USGSBRTFluvialFishIngest),
+    ("nas", USGSNASIngest),
+    ("norwest", NorWeSTIngest),
     ("attains", EPAATTAINSIngest),
     ("nwis", USGSNWISIngest),
     ("wqp", EPAWaterQualityPortalIngest),
     ("pa_pfbc", PAPFBCTroutStockedIngest),
+)
+
+# Sources that exist for explicit invocation but are NOT part of the
+# default `all` order (typically because they raise NotImplementedError
+# honestly at v0).
+_EXPLICIT_ONLY: tuple[tuple[str, type[IngestionModule]], ...] = (
+    ("cpw_stocking", CPWStockingIngest),
 )
 
 
@@ -74,13 +91,20 @@ def run(
         Per-module IngestSummary list.
     """
     summaries: list[IngestSummary] = []
-    targets = _DEFAULT_ORDER if source == "all" else tuple(
-        (k, c) for k, c in _DEFAULT_ORDER if k == source
-    )
+    if source == "all":
+        targets = _DEFAULT_ORDER
+    else:
+        targets = tuple(
+            (k, c) for k, c in (_DEFAULT_ORDER + _EXPLICIT_ONLY)
+            if k == source
+        )
     if not targets:
+        all_sources = tuple(
+            k for k, _ in (_DEFAULT_ORDER + _EXPLICIT_ONLY)
+        )
         raise ValueError(
             f"Unknown source {source!r}. Pick from "
-            f"{tuple(k for k, _ in _DEFAULT_ORDER)} or 'all'."
+            f"{all_sources} or 'all'."
         )
 
     # v0 smoke-test bounds: small enough to finish in minutes, large enough to

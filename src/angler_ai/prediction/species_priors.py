@@ -26,6 +26,30 @@ from angler_ai.features.store import FeatureStore
 log = logging.getLogger(__name__)
 
 
+# --------------------------------------------------------------------------- #
+# NAS-derived non-native fallback prior (Tier 1, 2026-06-20)                  #
+# --------------------------------------------------------------------------- #
+# USGS BRT v2.0 only models native ranges, so non-native species (rainbow
+# trout O. mykiss, brook trout S. fontinalis in CO; carp + smallmouth in
+# many western HUC8s) get zero priors. When the BRT path returns nothing
+# AND USGS NAS has documented the species as present in that HUC8, we
+# fall back to a WIDE-INTERVAL HONEST PRIOR rather than skipping silently.
+#
+# Design decision (user-locked 2026-06-20, see plan
+# C:/Users/rondi/.claude/plans/cozy-tickling-coral.md):
+#   - point=0.35  (neutral; "this species lives here, suitability unmodeled")
+#   - lower=0.05, upper=0.65  (half-width 0.30; WIDER than BRT's typical 0.05)
+#   - basis.interval_kind='spatial_unmodeled'  (semantically distinct from
+#     BRT's 'sampling' interval - downstream surfaces must surface this)
+#
+# The interval width IS the honesty signal. An angler reading "rainbow trout
+# at 0.35 [0.05, 0.65]" sees we know they're here but cannot say which reach
+# is best.
+NAS_NEUTRAL_BASE_P = 0.35
+NAS_INTERVAL_LOWER = 0.05
+NAS_INTERVAL_UPPER = 0.65
+
+
 # BRT predictions are unit-interval PRESENCE probabilities from a binomial
 # Boosted Regression Tree fit to electrofishing/seine survey data. The
 # Charbonneau 2025 hyperstability constant (beta=0.23) is calibrated for
@@ -141,10 +165,42 @@ def species_priors_for_geometry(
 ) -> list[tuple[SpeciesPrior, str]]:
     """Return calibrated priors for one species across many reaches.
 
+    Router:
+      1. Try the BRT path (USGS_BRT_V2.0 prior + Wilson interval).
+      2. If empty AND huc8 supplied AND species documented in NAS for that
+         HUC8: return a WIDE-INTERVAL non-native fallback prior for every
+         reach in the HUC8.
+      3. Else: empty list (caller surfaces "no priors" honestly).
+
+    No SQL UNION: BRT (interval_kind='sampling') and NAS
+    (interval_kind='spatial_unmodeled') are categorically different
+    uncertainty sources and must never blend in a single tuple.
+
     Returns:
         List of (SpeciesPrior, geometry_wkt). Geometry is the reach's
         MULTILINESTRING WKT.
     """
+    brt_rows = _brt_priors_for_geometry(
+        store, species_scientific, huc8=huc8, state=state, limit=limit,
+    )
+    if brt_rows:
+        return brt_rows
+    if huc8 is None:
+        return []
+    return non_native_prior_for_geometry(
+        store, species_scientific, huc8=huc8, state=state, limit=limit,
+    )
+
+
+def _brt_priors_for_geometry(
+    store: FeatureStore,
+    species_scientific: str,
+    *,
+    huc8: str | None,
+    state: str | None,
+    limit: int | None,
+) -> list[tuple[SpeciesPrior, str]]:
+    """BRT-only query path. Returns empty list when no BRT row exists."""
     conn = store.connect()
     where = []
     params: list = []
@@ -199,6 +255,112 @@ def species_priors_for_geometry(
             v2_join_method=method,
         )
         rows.append((sp, geom_wkt or ""))
+    return rows
+
+
+def non_native_prior_for_geometry(
+    store: FeatureStore,
+    species_scientific: str,
+    *,
+    huc8: str,
+    state: str | None = None,
+    limit: int | None = None,
+) -> list[tuple[SpeciesPrior, str]]:
+    """NAS-presence-only fallback prior for non-native species.
+
+    Returns a wide-interval `CalibratedProbability` for every reach in
+    `huc8` if USGS NAS has documented the species as present in that
+    HUC8 (with a presence-indicating status, filter applied at NAS
+    ingest time).
+
+    Empty list if no NAS record exists - the caller surfaces "no priors"
+    honestly.
+
+    Args:
+        store: feature store.
+        species_scientific: e.g. 'Oncorhynchus mykiss'.
+        huc8: 8-digit HUC8 to scope. Required.
+        state: optional 2-letter state filter (passed through to the reach
+            geometry query for consistency with the BRT path).
+        limit: optional row cap.
+
+    Returns:
+        List of (SpeciesPrior, geometry_wkt).
+    """
+    conn = store.connect()
+    nas_row = conn.execute(
+        """
+        SELECT scientific_name, common_name, status,
+               year_first_observed, year_last_observed, n_records
+        FROM nas_occurrences
+        WHERE huc8 = ? AND scientific_name = ?
+        """,
+        [huc8, species_scientific],
+    ).fetchone()
+    if nas_row is None:
+        return []
+    common_name = nas_row[1]
+    status = nas_row[2]
+    year_last = nas_row[4]
+    n_records = nas_row[5]
+
+    # Build a CalibratedProbability with the spatial-unmodeled interval.
+    basis = ProbabilityBasis(
+        cpue_derived_weight=0.0,
+        fisheries_independent_weight=1.0,
+        sources=(
+            "USGS_NAS_V1.0",
+            f"NAS:status={status}",
+            f"NAS:year_last={year_last}",
+            f"NAS:n_records={n_records}",
+            "hyperstability:not_applied(reason=NAS_presence_only_no_abundance)",
+        ),
+        interval_kind="spatial_unmodeled",
+    )
+    cp = CalibratedProbability(
+        point=NAS_NEUTRAL_BASE_P,
+        lower=NAS_INTERVAL_LOWER,
+        upper=NAS_INTERVAL_UPPER,
+        interval_confidence=0.95,
+        raw_point=None,
+        hyperstability_beta_applied=None,
+        basis=basis,
+    )
+
+    # Fetch every reach in the HUC8.
+    where = ["r.huc8 = ?"]
+    params: list = [huc8]
+    if state:
+        from angler_ai.ingest.nhdplus_hr import _state_fips
+        fips = _state_fips(state)
+        if fips:
+            where.append("r.state_fips = ?")
+            params.append(fips)
+    where_sql = " AND ".join(where)
+    sql = f"""
+        SELECT r.comid, ST_AsText(r.geometry) AS geom_wkt
+        FROM reaches r
+        WHERE r.source = 'NHDPlus_HR'
+          AND {where_sql}
+    """
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    rows: list[tuple[SpeciesPrior, str]] = []
+    for comid, geom_wkt in conn.execute(sql, params).fetchall():
+        sp = SpeciesPrior(
+            comid=int(comid),
+            species=species_scientific,
+            common_name=common_name,
+            probability=cp,
+            v2_join_method="nas_presence_only",
+        )
+        rows.append((sp, geom_wkt or ""))
+    log.info(
+        "NAS fallback: %s in HUC8 %s yields %d reaches "
+        "(presence-only, wide interval [%.2f, %.2f])",
+        species_scientific, huc8, len(rows),
+        NAS_INTERVAL_LOWER, NAS_INTERVAL_UPPER,
+    )
     return rows
 
 

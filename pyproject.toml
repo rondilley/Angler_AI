@@ -66,6 +66,16 @@ prediction = [
     "pandas>=2.2",
     "cmdstanpy>=1.2",
 ]
+# Map rendering: topo basemap overlay for the suitability PNGs (M7+).
+# contextily fetches tiles from USGS National Map / OpenTopoMap and caches
+# them locally; first render hits the network, subsequent renders are offline.
+# Both libs are BSD/MIT licensed; matplotlib + matplotlib-scalebar fit the
+# GPL-3 codebase.
+maps = [
+    "contextily>=1.6",
+    "pyproj>=3.6",
+    "matplotlib-scalebar>=0.8",
+]
 # Dev tooling
 dev = [
     "pytest>=8.0",

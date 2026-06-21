@@ -121,7 +121,12 @@ class ProjectedDailyTemp:
     """One of:
        - 'NWIS_obs' (real observation; not projected)
        - 'NWIS_air_projected' (Mohseni-Stefan applied to forecast air temp)
+       - 'NWIS_air_projected_norwest_anchor' (Mohseni delta applied to a
+         NorWeST mean-August baseline anchor instead of a stratified default)
        - 'NWIS_interp' (IDW from nearby same-order gauge observations)
+       - 'NWIS_interp_air_adjusted' (IDW spatial anchor + Mohseni temporal delta)
+       - 'NWIS_interp_air_adjusted_norwest_anchor' (IDW spatial + NorWeST
+         anchor for the temporal-delta reference)
        - 'not_modeled'"""
 
 
@@ -221,6 +226,18 @@ def project_daily_temps(
     sorted_air = sorted(daily_air_high_c.values())
     t_air_baseline = sorted_air[len(sorted_air) // 2] if sorted_air else 15.0
 
+    # NorWeST baseline anchor: per-reach mean-August 1993-2011 water
+    # temperature, populated by the NorWeST ingester into
+    # `reach_temp_baseline`. When present for a reach, it REPLACES the
+    # stratified Mohseni-Stefan default that would otherwise serve as the
+    # baseline-water-temp reference. The Mohseni air-temp delta is still
+    # applied per day; only the baseline anchor changes. This pushes the
+    # snowmelt-cooled / tailwater-cooled reaches toward their actual
+    # observed-climatology water temperature instead of a stream-order
+    # stratified guess. Honest limit: NorWeST is August climatology, so a
+    # June forecast still inherits the August baseline temperature.
+    norwest_baseline_by_comid = _fetch_norwest_baselines(store, comid_list)
+
     out: dict[tuple[int, date], ProjectedDailyTemp] = {}
     for comid in comid_list:
         h10 = huc10_by_comid.get(comid)
@@ -228,8 +245,16 @@ def project_daily_temps(
         reach_drainage = drainage_by_comid.get(comid)
         reach_params = select_mohseni_params(reach_order, reach_drainage)
         # Mohseni water-temp at the baseline air temp - used as the
-        # observation anchor for the IDW path.
-        t_water_baseline_mohseni = mohseni_water_from_air(t_air_baseline, reach_params)
+        # observation anchor for the IDW path. If NorWeST has a baseline
+        # for this reach, use it; otherwise fall back to the stratified
+        # Mohseni default.
+        norwest_baseline = norwest_baseline_by_comid.get(comid)
+        if norwest_baseline is not None:
+            t_water_baseline_mohseni = norwest_baseline
+            has_norwest_anchor = True
+        else:
+            t_water_baseline_mohseni = mohseni_water_from_air(t_air_baseline, reach_params)
+            has_norwest_anchor = False
         for d, t_air in daily_air_high_c.items():
             key = (comid, d)
             if key in obs_keys:
@@ -290,16 +315,57 @@ def project_daily_temps(
                     out[key] = ProjectedDailyTemp(
                         comid=comid, forecast_date=d,
                         temperature_c=t_projected,
-                        source="NWIS_interp_air_adjusted",
+                        source=(
+                            "NWIS_interp_air_adjusted_norwest_anchor"
+                            if has_norwest_anchor
+                            else "NWIS_interp_air_adjusted"
+                        ),
                     )
                     continue
 
-            # Fall back to pure Mohseni-Stefan air-to-water projection
-            # using stream-order-aware defaults (no IDW anchor available).
-            t_water = mohseni_water_from_air(t_air, reach_params)
+            # Fall back to pure Mohseni-Stefan air-to-water projection.
+            # If NorWeST has a baseline anchor for this reach, we use
+            # `t_water_baseline_mohseni = norwest_baseline` as the reference
+            # and apply the Mohseni air-temp delta off of that anchor.
+            # Otherwise we use the stratified Mohseni default at the
+            # current day's air temp (existing v0 behavior).
+            if has_norwest_anchor:
+                t_water_d = mohseni_water_from_air(t_air, reach_params)
+                air_delta = t_water_d - mohseni_water_from_air(
+                    t_air_baseline, reach_params,
+                )
+                t_water = t_water_baseline_mohseni + air_delta
+                source = "NWIS_air_projected_norwest_anchor"
+            else:
+                t_water = mohseni_water_from_air(t_air, reach_params)
+                source = "NWIS_air_projected"
             out[key] = ProjectedDailyTemp(
                 comid=comid, forecast_date=d,
                 temperature_c=t_water,
-                source="NWIS_air_projected",
+                source=source,
             )
     return out
+
+
+def _fetch_norwest_baselines(
+    store: FeatureStore, comids: list[int], *, month: int = 8,
+) -> dict[int, float]:
+    """Return {comid: baseline_temp_c} from `reach_temp_baseline` for NorWeST.
+
+    Returns empty dict if no rows exist (e.g., the NorWeST shapefile has
+    not been ingested yet). The caller MUST treat absence as "no anchor,
+    fall back to stratified default" - never substitute a value.
+    """
+    if not comids:
+        return {}
+    placeholders = ",".join("?" * len(comids))
+    rows = store.connect().execute(
+        f"""
+        SELECT comid, baseline_temp_c FROM reach_temp_baseline
+        WHERE source = 'NorWeST'
+          AND month = ?
+          AND comid IN ({placeholders})
+        """,
+        [int(month), *comids],
+    ).fetchall()
+    return {int(c): float(t) for c, t in rows if t is not None}

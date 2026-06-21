@@ -455,7 +455,6 @@ The Ethics Layer is consulted before every reach-level output surface: `species`
 ```
 NWIS_obs                    direct gauge measurement at the reach
 EcoSHEDS_TEMP               peer-reviewed model (v1; not loaded)
-NorWeST                     peer-reviewed model (v1; not loaded)
 PG-GNN                      physics-guided GNN nowcast (v1; not loaded)
 NWIS_interp                 IDW spatial extrapolation within HUC10 + stream order
 NWIS_interp_air_adjusted    IDW anchor + per-day Mohseni-Stefan air-temp delta
@@ -464,6 +463,28 @@ not_modeled                 no real source covers this reach
 ```
 
 When scoring, the resolver picks the highest-priority entry present for the (comid, date) tuple. Missing data returns `not_modeled` (NEVER a substituted value).
+
+**NorWeST is intentionally NOT in the resolver chain** (2026-06-20). NorWeST publishes a 1993-2011 mean-August stream-temperature climatology, not a daily reading; treating it as a current-day temperature source would silently substitute a 30-year mean for what the pipeline thinks is daily data. Instead NorWeST feeds `water_temp_model.py::project_daily_temps` as the per-reach `T_water_baseline` anchor for the Mohseni-Stefan projection - replacing the stratified `default_small_headwater` / `default_medium_stream` / `default_mainstem` defaults whenever a NorWeST row exists. The source tag on the resulting `ProjectedDailyTemp` becomes `NWIS_interp_air_adjusted_norwest_anchor` (IDW spatial + NorWeST baseline) or `NWIS_air_projected_norwest_anchor` (NorWeST baseline + Mohseni delta, no IDW available) - both surface the NorWeST contribution to the caller honestly.
+
+The NorWeST shapefile is manually downloaded once per processing unit from research.fs.usda.gov/rmrs/projects/norwest and placed under `${data_dir}/raw/norwest/<PU_name>/`. The `reach_temp_baseline` table holds the (comid, month, baseline_temp_c) tuples, keyed by HR COMID via `xwalk_v2_to_hr`.
+
+### 6.1.x Species prior fallback chain (non-native species)
+
+`prediction/species_priors.py::species_priors_for_geometry` is a router:
+
+```
+USGS_BRT_V2.0 native-range prior   prevalence-scaled Wilson interval
+                                   (interval_kind='sampling', width ~0.05-0.10)
+USGS_NAS_V1.0 presence-only        NAS occurrence in HUC8 -> wide flat prior
+                                   point=0.35, [0.05, 0.65]
+                                   (interval_kind='spatial_unmodeled', width 0.30)
+empty list                         no BRT row + no NAS row; caller surfaces
+                                   "no priors" honestly (e.g., the v0
+                                   Colorado run skipped rainbow + brook
+                                   before NAS was wired)
+```
+
+The fallback is a Python-level router, not a SQL UNION: BRT's `sampling` and NAS's `spatial_unmodeled` interval semantics are categorically different and must never blend in a single output tuple. `ProbabilityBasis.interval_kind` carries the semantic to the caption renderer + narrative + JSON so a brown-trout-vs-rainbow side-by-side map reads correctly.
 
 ### 6.2 Daily forecast (air + precip)
 

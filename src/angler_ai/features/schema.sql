@@ -97,6 +97,47 @@ CREATE TABLE IF NOT EXISTS attains_status (
     ingested_at          TIMESTAMP NOT NULL
 );
 
+-- USGS NAS (Nonindigenous Aquatic Species) occurrence summary, per HUC8.
+-- Used as a presence-only fallback prior for non-native species in HUC8s
+-- where USGS BRT v2.0 has no row (BRT v2.0 only models native distributions).
+-- PK is (huc8, scientific_name) - the summary collapses per-record history
+-- into a (first, last, n_records) tuple. Per-record history is v1 (Tier 2).
+-- Establishment filter applied at ingest: only Established/Stocked/Collected
+-- records contribute to the summary; Eradicated/Failed records are dropped.
+CREATE TABLE IF NOT EXISTS nas_occurrences (
+    huc8                 VARCHAR NOT NULL,
+    scientific_name      VARCHAR NOT NULL,
+    common_name          VARCHAR,
+    status               VARCHAR,
+    -- 'Established' | 'Stocked' | 'Collected' (subset of NAS status vocab
+    -- after our establishment filter). Most-recent-record wins.
+    year_first_observed  INTEGER,
+    year_last_observed   INTEGER,
+    n_records            INTEGER,
+    source               VARCHAR NOT NULL DEFAULT 'USGS_NAS_V1.0',
+    ingested_at          TIMESTAMP NOT NULL,
+    PRIMARY KEY (huc8, scientific_name)
+);
+CREATE INDEX IF NOT EXISTS nas_occurrences_species_idx ON nas_occurrences(scientific_name);
+
+-- Climatological water-temperature baseline per reach per month.
+-- NorWeST (USFS RMRS, 1993-2011 mean August) and EcoSHEDS_TEMP (East,
+-- hierarchical Bayesian) populate this. NOT a daily forecast - this is
+-- the spatial anchor that water_temp_model.py uses as `T_water_baseline`
+-- when projecting per-day water temps off the air-temp forecast.
+-- Distinct from reach_temperature (daily/observed values).
+CREATE TABLE IF NOT EXISTS reach_temp_baseline (
+    comid                BIGINT NOT NULL,
+    month                INTEGER NOT NULL,
+    -- 1-12; NorWeST baseline is month=8 (August mean) at v0
+    baseline_temp_c      DOUBLE NOT NULL,
+    source               VARCHAR NOT NULL,
+    -- 'NorWeST' | 'EcoSHEDS_TEMP' | future
+    ingested_at          TIMESTAMP NOT NULL,
+    PRIMARY KEY (comid, month, source)
+);
+CREATE INDEX IF NOT EXISTS reach_temp_baseline_comid_idx ON reach_temp_baseline(comid);
+
 -- USGS BRT v2.0 fluvial fish SDM priors. Per species per COMID.
 CREATE TABLE IF NOT EXISTS brt_priors (
     comid                BIGINT NOT NULL,

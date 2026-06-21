@@ -203,6 +203,27 @@ def score_reach_daily(
     if suitability_upper < suitability_index:
         suitability_upper = suitability_index
 
+    # Source-aware base label derived from the calibration basis. Different
+    # priors (USGS_BRT_V2.0 native-range vs. USGS_NAS_V1.0 presence-only
+    # fallback) produce different sources tuples; the renderer / narrative
+    # surface needs the right label per reach. Preserve the honest
+    # hyperstability annotation regardless of source.
+    sources = cp.basis.sources
+    primary_source = sources[0] if sources else "unknown"
+    interval_kind = cp.basis.interval_kind
+    if primary_source == "USGS_BRT_V2.0":
+        base_source = (
+            "USGS_BRT_V2.0 (presence probability; "
+            "hyperstability not_applied at v0)"
+        )
+    elif primary_source == "USGS_NAS_V1.0":
+        base_source = (
+            "USGS_NAS_V1.0 (presence-only fallback; "
+            f"interval_kind={interval_kind})"
+        )
+    else:
+        base_source = f"{primary_source} (interval_kind={interval_kind})"
+
     return DailyScore(
         comid=prior.comid,
         species=prior.species,
@@ -213,7 +234,7 @@ def score_reach_daily(
         interval_confidence=cp.interval_confidence,
         factors=FactorBreakdown(
             base_p=cp.point,
-            base_source="USGS_BRT_V2.0 (presence probability; hyperstability not_applied at v0)",
+            base_source=base_source,
             thermal_factor=thermal_f,
             thermal_source=thermal_src,
             thermal_input_c=thermal_in,

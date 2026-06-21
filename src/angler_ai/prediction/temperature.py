@@ -5,10 +5,17 @@ temperature record exists for a reach.
 Source vocabulary (in resolution priority order):
   - 'NWIS_obs'        (USGS gauge observation at the reach; real measurement)
   - 'EcoSHEDS_TEMP'   (East, Letcher hierarchical Bayesian model; v1)
-  - 'NorWeST'         (West, USFS shapefile scenarios; v1)
   - 'PG-GNN'          (physics-guided GNN nowcast; v1+)
   - 'NWIS_interp'     (USGS NWIS observed nearby interpolated; v0.5)
   - 'not_modeled'     (honest reason: no real source covers this reach)
+
+NorWeST removed from the resolver chain 2026-06-20: NorWeST is a 1993-2011
+mean-August climatology, NOT a daily reading. Treating it as a current-day
+temperature source would silently substitute a 30-year mean for a date the
+forecast pipeline thinks is daily. Instead, NorWeST is integrated as the
+per-reach baseline anchor for the Mohseni-Stefan projection in
+`water_temp_model.py` - it replaces the stratified default `T_water_baseline`
+when present. See plan notes at C:/Users/rondi/.claude/plans/cozy-tickling-coral.md.
 
 No fabricated values. If `reach_temperature` is empty for a reach, the
 resolver returns None and the source 'not_modeled'.
@@ -29,7 +36,6 @@ from angler_ai.features.store import FeatureStore
 _PRIORITY: tuple[str, ...] = (
     "NWIS_obs",
     "EcoSHEDS_TEMP",
-    "NorWeST",
     "PG-GNN",
     "NWIS_interp",
     "NWIS_interp_air_adjusted",

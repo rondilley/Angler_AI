@@ -206,6 +206,9 @@ _STATE_FIPS = {
     # Western trout-river demo states (added 2026-06-17 to support
     # Henrys Fork / Madison / Big Hole / Jefferson / Firehole queries).
     "MT": "30", "WY": "56",
+    # Gunnison basin demo (added 2026-06-20 to support Uncompahgre / Cimarron /
+    # Taylor / Upper+Lower Gunnison queries).
+    "CO": "08",
 }
 
 
